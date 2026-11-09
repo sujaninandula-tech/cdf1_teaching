@@ -46,8 +46,54 @@ PALETTE = [
     (26, 26, 26),     # 3 black
     (245, 245, 240),  # 4 white
     (150, 150, 150),  # 5 grey
+    (70, 70, 70),     # 6 dark grey
 ]
 PRIMARIES = 3
+NAMES = {"red": 0, "blue": 1, "yellow": 2, "black": 3, "white": 4, "grey": 5, "gray": 5,
+         "darkgrey": 6, "darkgray": 6, "dark-grey": 6}
+# the seven coloured pieces, in the order the `colors` input lists them
+ROLES = ["base", "half", "wedge", "bar", "disc", "ball", "small"]
+# one colour set per variant, chosen by the sign of the force
+#               base   half  wedge  bar    disc  sphere small
+PRESETS = {
+    "balanced": [4,     1,    2,     4,     0,    5,     1],   # white blue yellow white red grey blue
+    "left":     [4,     2,    1,     4,     0,    5,     0],   # white yellow blue white red grey red
+    "right":    [4,     1,    0,     4,     2,    5,     2],   # white blue red white yellow grey yellow
+}
+
+
+def preset_for(force):
+    f = _d(force, 0.0)
+    if abs(f) < 1e-6:
+        return "balanced"
+    return "left" if f < 0 else "right"
+
+
+def parse_colors(spec, force=0.0):
+    """Colours per shape as {role: palette index}.
+    Starts from the variant preset chosen by the force; a typed list such as
+    'red yellow blue black red blue grey' (names or 0-6) overrides it."""
+    ids = list(PRESETS[preset_for(force)])
+    if spec is None:
+        return dict(zip(ROLES, ids)), False
+    if isinstance(spec, str):
+        items = spec.replace(",", " ").replace(";", " ").split()
+    else:
+        try:
+            items = list(spec)
+        except TypeError:
+            items = [spec]
+    used = False
+    for i, item in enumerate(items[:len(ROLES)]):
+        key = str(item).strip().lower()
+        if key in NAMES:
+            ids[i] = NAMES[key]; used = True
+        else:
+            try:
+                ids[i] = int(float(key)) % len(PALETTE); used = True
+            except ValueError:
+                pass
+    return dict(zip(ROLES, ids)), used
 
 
 def _d(value, default):
@@ -250,23 +296,24 @@ def _cut(brep, cutter):
 # --------------------------------------------------------------------------
 # composition
 # --------------------------------------------------------------------------
-def build_balance(color_shift=None, depth=0.6, **params):
+def build_balance(color_shift=None, depth=0.6, colors=None, **params):
     """Return (geometry list, colour list), same length, ready for Grasshopper."""
     L = compute_layout(**params)
-    shift = int(_d(color_shift, 0))
+    color_ids, custom = parse_colors(colors, params.get("force"))
+    shift = 0 if custom else int(_d(color_shift, 0))   # typed colours win over the shift
     geos, cols = [], []
 
-    def add(brep, color_id):
+    def add(brep, role):
         geos.append(brep)
-        cols.append(_colour(color_id, shift))
+        cols.append(_colour(color_ids[role], shift))
 
     # base cylinder on the ground
-    add(make_cylinder(rg.Point3d(0, 0, 0), L["base"]["r"], L["base"]["h"]), 0)
+    add(make_cylinder(rg.Point3d(0, 0, 0), L["base"]["r"], L["base"]["h"]), "base")
     # half-disc, rotated with the tilt
-    add(make_half_disc(_p(L["half"]["c"]), L["half"]["r"], depth, L["half"]["rot"]), 2)
+    add(make_half_disc(_p(L["half"]["c"]), L["half"]["r"], depth, L["half"]["rot"]), "half")
     # wedge, tip on the half-disc centre
     add(make_wedge(_p(L["wedge"]["apex"]), _p(L["wedge"]["left"]),
-                   _p(L["wedge"]["right"]), depth), 1)
+                   _p(L["wedge"]["right"]), depth), "wedge")
 
     # bar with two parallel tracks (grooves) running along its whole length,
     # closed at both ends: the sphere in the front groove, the disc in the back
@@ -304,13 +351,13 @@ def build_balance(color_shift=None, depth=0.6, **params):
                   rg.Interval(-slot_w / 2.0, slot_w / 2.0),
                   rg.Interval(-g, 1.0))
     bar_brep = _cut(bar_brep, slot.ToBrep())
-    add(bar_brep, 3)
+    add(bar_brep, "bar")
 
     # weights sitting in their grooves (sphere front, disc back)
-    add(make_disc(_p(L["disc"]["c"], y_disc), L["disc"]["r"], depth), 0)
-    add(make_sphere(_p(L["ball"]["c"], y_ball), L["ball"]["r"]), 1)
+    add(make_disc(_p(L["disc"]["c"], y_disc), L["disc"]["r"], depth), "disc")
+    add(make_sphere(_p(L["ball"]["c"], y_ball), L["ball"]["r"]), "ball")
 
     # force ball: only when there is a force
     if L["small"]["show"]:
-        add(make_sphere(_p(L["small"]["c"]), L["small"]["r"]), 1)
+        add(make_sphere(_p(L["small"]["c"]), L["small"]["r"]), "small")
     return geos, cols
